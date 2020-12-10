@@ -1,61 +1,28 @@
 #Set working environment 
-setwd("~/Box/Comp_bio/Final project/")
-#load in the feature identification scripts from Townes et al. 2019 - this uses the multinomial deviance estimation
-# better than constant experions / highly variable expression 
-#source("scrna2019-master/util/functions_genefilter.R")
+setwd("~/Box/Comp_bio/Final project/Biol_536_final_project_code/")
 
-#Basic workflow for performing a GLM-PCA dimension reduction using the scry package developed throug Townes et al. 2019
-
-#First, we'll make sure that the data follows a normal distrubtion: below is the code reproduced from Townes 
-
-#Make sure you follow the data downloading steps in 01_data_loading.Rmd
-
-# Data loading 
+#Dependencies - many of these are not on CRAN, but on Bioconductor
 library(SingleCellExperiment)
-source("./util/functions.R") #get_10x_readcounts function
-fp<-file.path
-bp<-"./real/zheng_2017_monocytes"
-
-sce<-get_10x_readcounts(fp(bp,"data/hg19"),fp(bp,"data/cd14_monocytes_molecule_info.h5"))
-saveRDS(sce,fp(bp,"data/01_sce_all_genes_all_cells.rds"))
-
-
-
-
-suppressPackageStartupMessages(library(SingleCellExperiment))
 library(ggplot2); theme_set(theme_bw())
 library(DuoClustering2018)
-
-require(scry)
-
-sce<-sce_full_Zhengmix4eq()
-
-celegans <- readRDS("~/Box/Comp_bio/Final project/lineage_tree_reconstruction-main/data/eset_ABprp.rds")
-
-#Lets see the distribution of our UMIs / reads. 
+library(scry)
 library(BiocGenerics)
 library(Biobase)
 library(Matrix)
 library(ggExtra)
-library(ggplot2)
-cur_eset <- readRDS("~/Box/Comp_bio/Final project/lineage_tree_reconstruction-main/data/eset_ABprp.rds")
-cur_tree <- readRDS("~/Box/Comp_bio/Final project/lineage_tree_reconstruction-main/data/subtree_ABprp.rds")
-cur_eset@assayData$exprs[1:5, 1:5] # The exprs slot contains the raw count matrix in sparse matrix format
-cur_eset@assayData$norm_exprs[1:5, 1:5] # The norm_exprs slot contains the log2 transformed normalized count matrix in sparse matrix format
 
-#Make a really simple version of the single cell experiment objects so that we can 
-# use the feature identification functions from Townes et al. 2019. 
-#Counts 
-mat <- as.matrix(cur_eset@assayData$exprs)
-log_mat <- log(mat)
-#Lets see if it follows some of the predictions of a multinomial distribution: 
-#Prediction 1: Fraction of zeros is inversely related to the total UMIs in a sample
-#First get all of the UMI counts for each droplet 
-umi_droplet<-colSums(mat)
-#Next get the fraction of zeros 
-zeroFrac_droplet <- colMeans(mat==0)
-#Lets plot the relationship now. 
-pd<-data.frame(sz=umi_droplet,pz=zeroFrac_droplet)
+#Load in some scripts from Townes et al. 2019 - https://github.com/willtownes/scrna2019 
+source("./util/functions.R")
+source("./util/functions_genefilter.R")
+
+#Load in the data - the data is contained in an EXpression set object
+cur_eset <- readRDS("./data/eset_ABprp.rds")
+c_elegans <- SingleCellExperiment(assays=list(counts=cur_eset@assayData$exprs, logcounts=cur_eset@assayData$norm_exprs), 
+                                  colData = list(nUMI=pData(cur_eset)$n.umi, cell.lin=pData(cur_eset)$lineage, embryo.time=pData(cur_eset)$embryo.time))
+
+#Check some of the predictions of a multinomial distribution on the C. elegans dataset 
+#1. Test whether the fraction of zeros in a droplet decreases with the total UMIs per droplet 
+pd<-data.frame(sz=colData(c_elegans)$nUMI,pz=colMeans(counts(c_elegans)==0))
 plt <- ggplot(pd,aes(x=sz,y=pz))+
   geom_point()+
   theme_bw()+
@@ -63,16 +30,12 @@ plt <- ggplot(pd,aes(x=sz,y=pz))+
   ylab("fraction of zeros per droplet")+
   scale_x_log10()+
   theme(text = element_text(size=20))
-#Add some histograms to demonstrate the data. 
+#Add some histograms to get a nice spread of the data 
 ggExtra::ggMarginal(plt,type="histogram",fill="white",bins=100)
-#Ok, it mostly matches the prediction and looks very similar to the data we saw 
-# in Townes
+#It appears that it does 
 
-#Next we'll test the predction that probability of a gene having a zero count is a 
-# decreasing function of its mean expression. 
-
-#downsample to normalize droplet size (total UMI)
-Yds<-Down_Sample_Matrix(mat)
+#prediction 2: The number of times that a zero is observed is a decreasing function of its expression across cells. 
+Yds<-Down_Sample_Matrix(counts(c_elegans))
 Yds<-Yds[rowSums(Yds)>0,]
 #variance=mean, suggests poisson
 m<-rowMeans(Yds); v<-apply(Yds,1,var)
@@ -92,22 +55,31 @@ xlo<-min(pd$log_mean)
 xhi<-max(pd$log_mean)
 xcv<-data.frame(x=c(xlo,xhi))
 ggplot(xcv)+geom_point(data=pd,aes(x=log_mean,y=frac_zero),alpha=.5) +stat_function(aes(x,color="bin"),fun=predict_zeros_binom) +stat_function(aes(x,color="poi"),fun=predict_zeros_poi) +stat_function(aes(x,color="nb"),fun=predict_zeros_nb) #+scale_color_manual("model",breaks=c("bin","poi","nb"),values=c("blue","green","red"))
-#ggs("logmean_pzero_binom_monocytes.pdf")
 
-png(fp(pth,"logmean_pzero_monocytes.png"),width=6,height=4)
-#same plot but using base plot
-with(pd,plot(log_mean,frac_zero,xlab="log of mean expression",ylab="fraction of zero droplets",cex=1.5, cex.lab = 1.5, cex.axis = 1.5))
-curve(predict_zeros_binom,from=xlo,to=xhi,col="blue",lwd=4,add=TRUE)
-curve(predict_zeros_poi,from=xlo,to=xhi,col="green",lwd=3,lty=2,add=TRUE)
-curve(predict_zeros_nb(x,phi=4),from=xlo,to=xhi,col="red",lwd=3,lty=3,add=TRUE)
-legend("bottomleft",c("Multinomial","Poisson","Negative Binomial"),lty=c(1,2,3),lwd=c(4,3,3),col=c("blue","green","red"), cex = 1.5)
-dev.off()
+# png(fp(pth,"logmean_pzero_monocytes.png"),width=6,height=4)
+# #same plot but using base plot
+# with(pd,plot(log_mean,frac_zero,xlab="log of mean expression",ylab="fraction of zero droplets",cex=1.5, cex.lab = 1.5, cex.axis = 1.5))
+# curve(predict_zeros_binom,from=xlo,to=xhi,col="blue",lwd=4,add=TRUE)
+# curve(predict_zeros_poi,from=xlo,to=xhi,col="green",lwd=3,lty=2,add=TRUE)
+# curve(predict_zeros_nb(x,phi=4),from=xlo,to=xhi,col="red",lwd=3,lty=3,add=TRUE)
+# legend("bottomleft",c("Multinomial","Poisson","Negative Binomial"),lty=c(1,2,3),lwd=c(4,3,3),col=c("blue","green","red"), cex = 1.5)
+# dev.off()
 
-#These also look great! 
+#Ok, that also matches our predictions! 
 
-#Ok next step is to look at the deviance for feature selection. 
-#Lets get ranks for the deviance, highly expressed, and highly variable genes 
-#Need to make a singlecellExpression object 
+#Next up is to perform feature selection. We'll be using the deviance criteria - but this may not be the best measure to capture cell to cell 
+# variation when there are so many cell types and perhaps just differentiation would be best. 
+cl <- scran::quickCluster(c_elegans)
+c_elegans<-scran::computeSumFactors(c_elegans,clusters=cl)
+c_elegans<-scater::logNormCounts(c_elegans)
+#This script from Townes et al. performs gene ranking by constant expression, differential expression (mean to variance ratio) and deviance
+gm<-rank_all_genes(c_elegans)
+rowData(c_elegans)<-gm
+
+
+
+
+#Create a SingleCellExperiment object that much of the GLM-PCA code runs on (C elegans data was provided in an expression set )
 umi_droplet <- as.data.frame(umi_droplet)
 colnames(umi_droplet)<-"nUMI"
 #add cell linage data
@@ -121,7 +93,7 @@ c_elegans<-scater::logNormCounts(c_elegans)
 gm<-rank_all_genes(c_elegans)
 rowData(c_elegans)<-gm
 
-#Plot the data from these 
+#Lets just visualize this: 
 pd<-meanvar_plotdata(c_elegans,G=1000)
 ggplot(pd,aes(x=m,y=vmr,colour=criteria))+
   geom_point(alpha=.9)+
@@ -132,37 +104,11 @@ ggplot(pd,aes(x=m,y=vmr,colour=criteria))+
   scale_x_log10()+
   scale_y_log10()+
   theme(text = element_text(size=16))
-  
-#Ok, no that we have our features picked out, time for a GLM-PCA?
-#First we'll run it on all of the data, and then we'll run it on a feature selected set
 
 
-L<-10 #number of dimensions 
-K<-8 #number of known clusters
-Y <- counts(c_elegans)
-#get rid of the zeros 
-Y <- Y[rowSums(counts(c_elegans))!=0,]
-system.time(res<-glmpca(Y,L,fam="poi",verbose=TRUE)) #16 min - 173 iterations 
-plot(res$dev,type="l",log="y")
-factors<-res$factors
-
-sz<-colMeans(Y)
-pd<-cbind(factors,celltype=cell_lin$lineage,pz=colMeans(Y==0),z=log10(sz))
-ggplot(pd,aes(x=dim1,y=dim2,colour=celltype))+geom_point(show.legend=TRUE)
-#if(sp) ggsave(fp(pth,"zheng8eq_glmpca12.pdf"),width=6,height=4)
-ggplot(pd,aes(x=dim3,y=dim4,colour=celltype))+geom_point(show.legend=FALSE)
-ggplot(pd,aes(x=pz,y=dim1,colour=celltype))+geom_point(show.legend=FALSE)
-#if(sp) ggsave(fp(pth,"zheng8eq_pz_glmpca1.pdf"),width=4,height=4)
-# kmeans_res<-kmeans(factors,K,nstart=25)
-# cl<-kmeans_res$cluster
-# ari(cl,pd$celltype) #.74
-# mcl_res<-Mclust(factors,K)
-# ari(mcl_res$classification,pd$celltype) #.74
-
-#Ok, those looked terrible, just a point cloud with nothing really meaningful differentiating
-
-#Lets try with the most "deviant" 500 genes - they are already ranked in the rowData field
-#so we'll just get the rownames / gene names for the top 5. 
+#Now that the featers have been picked out, we can run a glm pca
+#We'll use the poison liklihood for now. 
+# Still need to figure out exactly what chaning the dimension parameter (L) does
 L<-5
 Y <- counts(c_elegans)
 #get rid of the zeros 
@@ -173,6 +119,7 @@ system.time(res<-glmpca(Y,L,fam="poi",verbose=TRUE)) #25 seconds - 113 iteration
 plot(res$dev,type="l",log="y")
 factors<-res$factors
 
+#Visualize.
 sz<-colMeans(Y)
 pd<-cbind(factors,celltype=cell_lin$lineage,pz=colMeans(Y==0),z=log10(sz))
 ggplot(pd,aes(x=dim1,y=dim2,colour=celltype))+geom_point(show.legend=TRUE)
@@ -180,65 +127,4 @@ ggplot(pd,aes(x=dim1,y=dim2,colour=celltype))+geom_point(show.legend=TRUE)
 ggplot(pd,aes(x=dim2,y=dim3,colour=celltype))+geom_point(show.legend=T)
 ggplot(pd,aes(x=dim1,y=dim3,colour=celltype))+geom_point(show.legend=T)
 
-#Ok, if we try for time points, what do we get. 
-pd<-cbind(factors,time.point=time_points,pz=colMeans(Y==0),z=log10(sz))
-ggplot(pd,aes(x=dim1,y=dim2,colour=time_points))+geom_point(show.legend=TRUE)
 
-
-#We can try the neg binomial too. 
-system.time(res<-glmpca(Y,L,fam="nb",verbose=TRUE)) #25 seconds - 113 iterations 
-factors<-res$factors
-
-sz<-colMeans(Y)
-#pd<-cbind(factors,celltype=cell_lin$lineage,pz=colMeans(Y==0),z=log10(sz))
-pd<-cbind(factors,time.point=time_points,pz=colMeans(Y==0),z=log10(sz))
-pdf("test.pdf")
-ggplot(data = pd, aes(x=dim1, y=dim2, colour=time_points))+
-  geom_point()
-dev.off()
-ggplot(pd,aes(x=dim1,y=dim2,colour=time_points))+geom_point(show.legend=F)
-#if(sp) ggsave(fp(pth,"zheng8eq_glmpca12.pdf"),width=6,height=4)
-ggplot(pd,aes(x=dim2,y=dim3,colour=time_points))+geom_point(show.legend=T)
-ggplot(pd,aes(x=dim1,y=dim3,colour=celltype))+geom_point(show.legend=T)
-
-ggplot(pd,aes(x=dim3,y=dim4,colour=celltype))+geom_point(show.legend=FALSE)
-ggplot(pd,aes(x=pz,y=dim1,colour=celltype))+geom_point(show.legend=FALSE)
-
-
-#We can see whether these point clouds correspond at all to the "true tree" - this will be 
-# on the other data type
-pData(cur_eset)$nb_pca1 <- pd$dim1
-pData(cur_eset)$nb_pca2 <- pd$dim2
-pData(cur_eset)$nb_pca3 <- pd$dim3
-#tree plust scatter
-res <- make_tree_dimr(proj=pData(cur_eset)[, c("nb_pca2", "nb_pca3", "lineage")], left_tree = NULL, right_tree = NULL, top_tree = top_tree, shared.col = "lineage", colorBy = "lineage", tree.color = lineage_color, label.time.cut = 120,
-                      plot.link = "top", shift.y.scale = 1/20, 
-                      return_coords = F) 
-res
-
-pd <- data.frame("dim1"=pData(cur_eset)$nb_pca1,"dim2"=pData(cur_eset)$nb_pca2, "time.point"=pData(cur_eset)$embryo.time)
-ggplot(pd,aes(x=dim1,y=dim2,colour=time.point))+geom_point(show.legend=TRUE)+
-  scale_color_gradientn(colours = rainbow(5))
-
-
-
-
-
-
-
-
-res<-list()
-res$expr<-filterExpr(c_elegans)
-res$hvg<-filterHVG(c_elegans,total_umi="total_counts")
-res$devb<-filterDev(sce,dev="binomial")
-res$devp<-filterDev(sce,dev="poisson")
-f<-function(sn){
-  s<-res[[sn]]
-  x<-data.frame(gene=rownames(s),rank=seq_len(nrow(s)))
-  colnames(x)[2]<-sn
-  x
-}
-res2<-lapply(names(res),f)
-rk<-Reduce(function(x,y){merge(x,y,by="gene",all=TRUE)},res2)
-rownames(rk)<-rk$gene
-rk$gene<-NULL
