@@ -10,10 +10,14 @@ library(BiocGenerics)
 library(Biobase)
 library(Matrix)
 library(ggExtra)
-
+library(glmpca)
+library(Seurat)
+library(mclust)
 #Load in some scripts from Townes et al. 2019 - https://github.com/willtownes/scrna2019 
 source("./util/functions.R")
 source("./util/functions_genefilter.R")
+source("./util/clustering.R")
+
 
 #Load in the data - the data is contained in an EXpression set object
 cur_eset <- readRDS("./data/eset_ABprp.rds")
@@ -77,22 +81,6 @@ gm<-rank_all_genes(c_elegans)
 rowData(c_elegans)<-gm
 
 
-
-
-#Create a SingleCellExperiment object that much of the GLM-PCA code runs on (C elegans data was provided in an expression set )
-umi_droplet <- as.data.frame(umi_droplet)
-colnames(umi_droplet)<-"nUMI"
-#add cell linage data
-cell_lin <- data.frame("lineage" = cur_eset@phenoData@data$lineage, row.names = rownames(cur_eset@phenoData@data))
-#add time points
-time_points <- data.frame("time_points" = pData(cur_eset)$time.point, row.names = row.names(pData(cur_eset)))
-c_elegans <- SingleCellExperiment(assays=list(counts=mat, logcounts=log_mat), colData = list(umi_droplet, cell_lin))
-cl <- scran::quickCluster(c_elegans)
-c_elegans<-scran::computeSumFactors(c_elegans,clusters=cl)
-c_elegans<-scater::logNormCounts(c_elegans)
-gm<-rank_all_genes(c_elegans)
-rowData(c_elegans)<-gm
-
 #Lets just visualize this: 
 pd<-meanvar_plotdata(c_elegans,G=1000)
 ggplot(pd,aes(x=m,y=vmr,colour=criteria))+
@@ -109,7 +97,8 @@ ggplot(pd,aes(x=m,y=vmr,colour=criteria))+
 #Now that the featers have been picked out, we can run a glm pca
 #We'll use the poison liklihood for now. 
 # Still need to figure out exactly what chaning the dimension parameter (L) does
-L<-5
+
+L<-10
 Y <- counts(c_elegans)
 #get rid of the zeros 
 Y <- Y[rowSums(counts(c_elegans))!=0,]
@@ -121,10 +110,148 @@ factors<-res$factors
 
 #Visualize.
 sz<-colMeans(Y)
-pd<-cbind(factors,celltype=cell_lin$lineage,pz=colMeans(Y==0),z=log10(sz))
+pd<-cbind(factors,celltype=colData(c_elegans)$cell.lin,pz=colMeans(Y==0),z=log10(sz))
 ggplot(pd,aes(x=dim1,y=dim2,colour=celltype))+geom_point(show.legend=TRUE)
 #if(sp) ggsave(fp(pth,"zheng8eq_glmpca12.pdf"),width=6,height=4)
 ggplot(pd,aes(x=dim2,y=dim3,colour=celltype))+geom_point(show.legend=T)
 ggplot(pd,aes(x=dim1,y=dim3,colour=celltype))+geom_point(show.legend=T)
 
+#3d visualization of latent dimensions - to see if we can determine any further structure in the 
+# emebedding
+fig <- plot_ly(pd, x = ~dim1, y = ~dim2, z = ~dim3, color = ~celltype, 
+               marker= list(size=10))
+fig <- fig %>% add_markers()
+fig <- fig %>% layout(scene = list(xaxis = list(title = 'dim1'),
+                                   yaxis = list(title = 'dim2'),
+                                   zaxis = list(title = 'dim3')))
+fig
+
+#Run clustering algorthms and an ARI test. 
+seurat_clust <- seurat_cluster(pd[,1:10], res=2)
+# res_0.1 <- subset(seurat_clust, resolution == 0.1)
+# res_0.5 <- subset(seurat_clust, resolution == 0.5)
+# res_1 <- subset(seurat_clust, resolution == 1)
+
+#We then compare those clusters to the true cell identies using the Rand index
+ari <- adjustedRandIndex(seurat_clust$cluster, c_elegans$cell.lin)
+# [1] 0.2941941
+
+# Lets look at embryo time. 
+sz<-colMeans(Y)
+pd<-cbind(factors,embryo.time=colData(c_elegans)$embryo.time,pz=colMeans(Y==0),z=log10(sz))
+ggplot(pd,aes(x=dim1,y=dim2,colour=embryo.time))+geom_point(show.legend=TRUE)+
+  scale_color_gradientn(colours = rainbow(5))
+#if(sp) ggsave(fp(pth,"zheng8eq_glmpca12.pdf"),width=6,height=4)
+ggplot(pd,aes(x=dim2,y=dim3,colour=celltype))+geom_point(show.legend=T)
+ggplot(pd,aes(x=dim1,y=dim3,colour=celltype))+geom_point(show.legend=T)
+
+
+
+### OLD STUFF 
+
+#NWe can try running the GLM-PCA on the genes with the most variable expression.  
+# L<-5
+# Y <- counts(c_elegans)
+# #get rid of the zeros 
+# Y <- Y[rowSums(counts(c_elegans))!=0,]
+# dev_ind <- rownames(rowData(c_elegans))[order(rowData(c_elegans)$expr)][1:1000]
+# Y <- Y[rownames(Y) %in% dev_ind,]
+# system.time(res<-glmpca(Y,L,fam="poi",verbose=TRUE)) #25 seconds - 113 iterations 
+# plot(res$dev,type="l",log="y")
+# factors<-res$factors
+# 
+# sz<-colMeans(Y)
+# pd<-cbind(factors,celltype=colData(c_elegans)$cell.lin,pz=colMeans(Y==0),z=log10(sz))
+# ggplot(pd,aes(x=dim1,y=dim2,colour=celltype))+geom_point(show.legend=F)
+# ggplot(pd,aes(x=dim2,y=dim3,colour=celltype))+geom_point(show.legend=F)
+# ggplot(pd,aes(x=dim1,y=dim3,colour=celltype))+geom_point(show.legend=F)
+# 
+# library(plotly)
+# 
+# 
+# 
+# 
+# While it looks there is some structure to the data, we are not getting 
+# specific clusters by cell type. - which makes some sense given that we 
+# collecting data on a time series. 
+# To evaluate the "chops" of this method - lets just try filtering out 
+# only the differentiated cell types
+
+#Subset by the "differentiated" cell types - this is lineages that have 10 characters - each 
+# step appears to increase by one character. 
+# 
+# dif_cells <- names(table(colData(c_elegans)$cell.lin))[nchar(names(table(colData(c_elegans)$cell.lin))) == 10]
+# 
+# c_elegans_dif <- c_elegans[,colData(c_elegans)$cell.lin %in% dif_cells]
+# #First we can try it on the "globally" ranked genes - meaning genes ranked for their deviance, etc. on 
+# # all cells. We can try reranking on just these cells if that fails. 
+# L<-10
+# Y <- counts(c_elegans_dif)
+# #get rid of the zeros 
+# Y <- Y[rowSums(counts(c_elegans_dif))!=0,]
+# dev_ind <- rownames(rowData(c_elegans_dif))[order(rowData(c_elegans_dif)$dev)][1:500]
+# Y <- Y[rownames(Y) %in% dev_ind,]
+# system.time(res<-glmpca(Y,L,fam="poi",verbose=TRUE)) #25 seconds - 113 iterations 
+# plot(res$dev,type="l",log="y")
+# factors<-res$factors
+# 
+# sz<-colMeans(Y)
+# pd<-cbind(factors,celltype=colData(c_elegans_dif)$cell.lin,pz=colMeans(Y==0),z=log10(sz))
+# ggplot(pd,aes(x=dim1,y=dim2,colour=celltype))+geom_point(show.legend=F)
+# ggplot(pd,aes(x=dim2,y=dim3,colour=celltype))+geom_point(show.legend=F)
+# ggplot(pd,aes(x=dim1,y=dim3,colour=celltype))+geom_point(show.legend=F)
+# 
+# fig <- plot_ly(pd, x = ~dim1, y = ~dim2, z = ~dim3, color = ~celltype, 
+#                marker= list(size=10))
+# fig <- fig %>% add_markers()
+# fig <- fig %>% layout(scene = list(xaxis = list(title = 'Weight'),
+#                                    yaxis = list(title = 'Gross horsepower'),
+#                                    zaxis = list(title = '1/4 mile time')))
+# fig
+# 
+# #There is decent separation. Lets try redoing variable gene analysis and see if that gives
+# # more separation. 
+# 
+# cl <- scran::quickCluster(c_elegans_dif)
+# c_elegans_dif<-scran::computeSumFactors(c_elegans_dif,clusters=cl)
+# c_elegans_dif<-scater::logNormCounts(c_elegans_dif)
+# #This script from Townes et al. performs gene ranking by constant expression, differential expression (mean to variance ratio) and deviance
+# gm<-rank_all_genes(c_elegans_dif)
+# rowData(c_elegans_dif)<-gm
+# 
+# L<-10
+# Y <- counts(c_elegans_dif)
+# #get rid of the zeros 
+# Y <- Y[rowSums(counts(c_elegans_dif))!=0,]
+# dev_ind <- rownames(rowData(c_elegans_dif))[order(rowData(c_elegans_dif)$dev)][1:1500]
+# Y <- Y[rownames(Y) %in% dev_ind,]
+# system.time(res<-glmpca(Y,L,fam="poi",verbose=TRUE)) #25 seconds - 113 iterations 
+# plot(res$dev,type="l",log="y")
+# factors<-res$factors
+# 
+# sz<-colMeans(Y)
+# pd<-cbind(factors,celltype=colData(c_elegans_dif)$cell.lin,pz=colMeans(Y==0),z=log10(sz))
+# ggplot(pd,aes(x=dim1,y=dim2,colour=celltype))+geom_point(show.legend=F)
+# ggplot(pd,aes(x=dim2,y=dim3,colour=celltype))+geom_point(show.legend=F)
+# ggplot(pd,aes(x=dim1,y=dim3,colour=celltype))+geom_point(show.legend=F)
+# 
+# fig <- plot_ly(pd, x = ~dim1, y = ~dim2, z = ~dim3, color = ~celltype, 
+#                marker= list(size=10))
+# fig <- fig %>% add_markers()
+# fig <- fig %>% layout(scene = list(xaxis = list(title = 'Weight'),
+#                                    yaxis = list(title = 'Gross horsepower'),
+#                                    zaxis = list(title = '1/4 mile time')))
+# fig
+# 
+# 
+# #These appear maybe marginally better. z
+# #What happens if we apple a clustering algorthm and a discriminant function. 
+# #Use the seurat clustering (Which implementes the Louvain algorthm) function to begin adjusting for our performance
+# seurat_clust <- seurat_cluster(pd[,1:10], res=2)
+# # res_0.1 <- subset(seurat_clust, resolution == 0.1)
+# # res_0.5 <- subset(seurat_clust, resolution == 0.5)
+# # res_1 <- subset(seurat_clust, resolution == 1)
+# 
+# #We then compare those clusters to the true cell identies using the Rand index
+# ari <- adjustedRandIndex(seurat_clust$cluster, c_elegans_dif$cell.lin)
 
